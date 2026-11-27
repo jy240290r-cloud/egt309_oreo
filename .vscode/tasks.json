@@ -1,0 +1,34 @@
+{
+    // Run with Ctrl+Shift+P -> "Tasks: Run Task" -> pick a task.
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run pipeline (full, with tuning)",
+            "type": "shell",
+            "command": "bash run.sh",
+            "windows": {
+                "options": { "shell": { "executable": "C:\\Program Files\\Git\\bin\\bash.exe", "args": ["-c"] } }
+            },
+            "problemMatcher": [],
+            "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "label": "Run pipeline (quick, --no-tune)",
+            "type": "shell",
+            "command": "bash run.sh --no-tune",
+            "windows": {
+                "options": { "shell": { "executable": "C:\\Program Files\\Git\\bin\\bash.exe", "args": ["-c"] } }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run leakage demo (--feature-set all --no-tune)",
+            "type": "shell",
+            "command": "bash run.sh --feature-set all --no-tune",
+            "windows": {
+                "options": { "shell": { "executable": "C:\\Program Files\\Git\\bin\\bash.exe", "args": ["-c"] } }
+            },
+            "problemMatcher": []
+        }
+    ]
+}
