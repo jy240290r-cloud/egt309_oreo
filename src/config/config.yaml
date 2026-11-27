@@ -1,0 +1,163 @@
+# =============================================================================
+# EGT309 Predictive Maintenance Pipeline - configuration
+#
+# Every path, threshold, seed and hyperparameter used by the pipeline lives here.
+# Relative paths are resolved against the project root (the folder that holds src/).
+# The main options can be overridden from the command line (see `python src/main.py --help`).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# File locations
+# -----------------------------------------------------------------------------
+paths:
+  raw_csv: data/proj_machine_readings.csv     # source data loaded into SQLite
+  database: data/machine_readings.db          # generated SQLite DB (git-ignored)
+  model_dir: saved_model                      # trained pipelines (*.joblib)
+  report_dir: saved_model/reports             # metrics tables and plots
+
+# -----------------------------------------------------------------------------
+# SQLite database
+# -----------------------------------------------------------------------------
+database:
+  table: machine_readings   # table the CSV is written to and read back from
+  rebuild: false            # true = drop and recreate the DB from the CSV on every run
+  chunksize: 10000          # rows per insert batch when loading the CSV
+
+# -----------------------------------------------------------------------------
+# Reproducibility: used for the split, CV folds, search and every estimator
+# -----------------------------------------------------------------------------
+random_state: 42
+
+# -----------------------------------------------------------------------------
+# Train/test split (always stratified on the target, ~80/20 imbalance)
+# -----------------------------------------------------------------------------
+split:
+  test_size: 0.2
+
+# -----------------------------------------------------------------------------
+# Columns and feature set
+# -----------------------------------------------------------------------------
+features:
+  # sensors_only = sensor readings + engineered features (default, no leakage)
+  # all          = also adds the derived columns; ONLY to demonstrate target leakage
+  feature_set: sensors_only
+  target: maintenance_required
+  identifiers:              # never used as model features
+    - timestamp
+    - machine_id
+  sensors:                  # raw sensor readings
+    - temperature
+    - vibration
+    - humidity
+    - pressure
+    - energy_consumption
+  derived:                  # target leakage: excluded unless feature_set = all
+    - machine_status
+    - anomaly_flag
+    - predicted_remaining_life
+    - failure_type
+    - downtime_risk
+  categorical_derived:      # derived columns that are strings and need encoding
+    - failure_type
+
+# -----------------------------------------------------------------------------
+# Preprocessing (all steps run inside the sklearn Pipeline, fitted per CV fold)
+# -----------------------------------------------------------------------------
+preprocessing:
+  impute_strategy: median        # temperature imputation, fitted on training data only
+  temp_threshold: 90             # temp_over_90 = temperature > temp_threshold
+  vib_threshold: 80              # vib_over_80  = vibration_abs > vib_threshold
+  add_missing_flag: true         # add temperature_missing (0/1)
+  add_threshold_features: true   # add temp_over_90 and vib_over_80
+
+# -----------------------------------------------------------------------------
+# Models: `defaults` are passed to the estimator; `search_space` is sampled by
+# RandomizedSearchCV (keys are prefixed with `model__` in code).
+# random_state is injected from the top-level `random_state`.
+# -----------------------------------------------------------------------------
+models:
+  enabled:
+    - logistic_regression
+    - random_forest
+    - hist_gradient_boosting
+
+  logistic_regression:
+    defaults:
+      C: 1.0
+      solver: lbfgs
+      max_iter: 1000
+      class_weight: balanced
+    search_space:
+      C: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+
+  random_forest:
+    defaults:
+      n_estimators: 300
+      max_depth: null
+      min_samples_leaf: 5
+      max_features: sqrt
+      class_weight: balanced
+      n_jobs: -1
+    search_space:
+      n_estimators: [100, 200, 300, 500]
+      max_depth: [null, 5, 10, 20]
+      min_samples_leaf: [1, 5, 10, 20, 50]
+      max_features: [sqrt, log2, null]
+
+  hist_gradient_boosting:
+    defaults:
+      learning_rate: 0.1
+      max_iter: 200
+      max_leaf_nodes: 31
+      max_depth: null
+      min_samples_leaf: 20
+      l2_regularization: 0.0
+      class_weight: balanced
+      early_stopping: false
+    search_space:
+      learning_rate: [0.01, 0.03, 0.05, 0.1, 0.2]
+      max_iter: [100, 200, 300, 500]
+      max_leaf_nodes: [15, 31, 63]
+      max_depth: [null, 3, 5, 8]
+      min_samples_leaf: [20, 50, 100]
+      l2_regularization: [0.0, 0.1, 1.0]
+
+# -----------------------------------------------------------------------------
+# Hyperparameter tuning (training data only)
+# -----------------------------------------------------------------------------
+tuning:
+  enabled: true      # false = fit each model with its `defaults` only
+  n_iter: 20         # RandomizedSearchCV candidates per model
+  cv_folds: 5        # StratifiedKFold splits (also used for out-of-fold thresholds)
+  scoring: f1        # search objective (never accuracy)
+  n_jobs: -1         # parallel jobs for the search
+
+# -----------------------------------------------------------------------------
+# Decision threshold tuning on out-of-fold training probabilities
+# -----------------------------------------------------------------------------
+threshold:
+  tune: true            # false = use `default` for every model
+  default: 0.5
+  beta: 2               # F-beta to maximise; beta > 1 favours recall
+  min_precision: 0.25   # candidate thresholds below this precision are rejected
+  search_min: 0.05      # candidate grid: search_min..search_max in steps of search_step
+  search_max: 0.95
+  search_step: 0.01
+
+# -----------------------------------------------------------------------------
+# Evaluation on the held-out test set (used once)
+# -----------------------------------------------------------------------------
+evaluation:
+  permutation_repeats: 10                 # repeats for permutation importance
+  permutation_scoring: average_precision  # scorer for permutation importance (PR-AUC)
+  selection_metric: f2                    # primary metric, at the tuned threshold
+  tie_breaker: pr_auc                     # used when selection_metric values are within tie_tolerance
+  tie_tolerance: 0.005
+  plot_dpi: 120
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging:
+  level: INFO
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
