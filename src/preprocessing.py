@@ -361,13 +361,32 @@ def _safe_name(value: Any) -> str:
     return re.sub(r"\W+", "_", str(value)).strip("_")
 
 
+def _feature_set(cfg: dict[str, Any]) -> str:
+    """Return ``features.feature_set`` after checking it is allowed.
+
+    Raises:
+        ValueError: If the value is not one of ``FEATURE_SETS``.
+    """
+    feature_set = cfg["features"]["feature_set"]
+    if feature_set not in FEATURE_SETS:
+        raise ValueError(f"features.feature_set must be one of {FEATURE_SETS}, got {feature_set!r}.")
+    return feature_set
+
+
+def _threshold_adder(cfg: dict[str, Any]) -> ThresholdFeatureAdder:
+    """Create the ``ThresholdFeatureAdder`` with the thresholds from ``preprocessing``."""
+    prep = cfg["preprocessing"]
+    return ThresholdFeatureAdder(temp_threshold=prep["temp_threshold"], vib_threshold=prep["vib_threshold"])
+
+
 def get_feature_columns(cfg: dict[str, Any]) -> list[str]:
     """List the model feature columns produced for the configured feature set.
 
     For ``sensors_only``: ``temperature``, ``vibration_abs``, ``humidity``,
     ``pressure``, ``energy_consumption`` plus the enabled engineered features
     (``temperature_missing``, ``temp_over_90``, ``vib_over_80``). For ``all`` the
-    derived columns are appended.
+    derived columns are appended (``failure_type`` is one-hot encoded afterwards
+    by ``FailureTypeEncoder``).
 
     Args:
         cfg: Full pipeline configuration.
@@ -376,17 +395,34 @@ def get_feature_columns(cfg: dict[str, Any]) -> list[str]:
         Ordered list of feature column names.
 
     Raises:
-        ValueError: If ``features.feature_set`` is not one of ``FEATURE_SETS``.
+        ValueError: If ``features.feature_set`` is not one of ``FEATURE_SETS``,
+            or ``temperature``/``vibration`` are not listed in ``features.sensors``.
     """
-    raise NotImplementedError
+    feature_set = _feature_set(cfg)
+    sensors = list(cfg["features"]["sensors"])
+    for required in (TEMPERATURE_COL, VIBRATION_COL):
+        if required not in sensors:
+            raise ValueError(f"features.sensors must include '{required}' (needed by the preprocessing steps).")
+
+    prep = cfg["preprocessing"]
+    columns = [VIBRATION_ABS_COL if column == VIBRATION_COL else column for column in sensors]
+    if prep["add_missing_flag"]:
+        columns.append(TEMP_MISSING_COL)
+    if prep["add_threshold_features"]:
+        columns.extend(_threshold_adder(cfg).feature_names())
+    if feature_set == "all":
+        columns.extend(cfg["features"]["derived"])
+    return columns
 
 
 def build_preprocessor(cfg: dict[str, Any]) -> Pipeline:
     """Build the unfitted preprocessing Pipeline from the config.
 
     Steps: ``VibrationAbsTransformer`` -> ``TemperatureImputer`` ->
-    ``ThresholdFeatureAdder`` (if enabled) -> ``FeatureSelector``. The output is
-    **unscaled**; models that need scaling add it themselves.
+    ``ThresholdFeatureAdder`` (if ``add_threshold_features``) -> ``FeatureSelector``
+    -> ``FailureTypeEncoder`` (only when ``feature_set`` is ``all``, one per column
+    in ``features.categorical_derived``). The output is **unscaled**; models
+    that need scaling add it themselves.
 
     Args:
         cfg: Full pipeline configuration.
@@ -394,7 +430,21 @@ def build_preprocessor(cfg: dict[str, Any]) -> Pipeline:
     Returns:
         Unfitted sklearn Pipeline.
     """
-    raise NotImplementedError
+    prep = cfg["preprocessing"]
+    steps: list[tuple[str, DataFrameTransformer]] = [
+        ("vibration_abs", VibrationAbsTransformer()),
+        (
+            "impute_temperature",
+            TemperatureImputer(strategy=prep["impute_strategy"], add_missing_flag=prep["add_missing_flag"]),
+        ),
+    ]
+    if prep["add_threshold_features"]:
+        steps.append(("threshold_features", _threshold_adder(cfg)))
+    steps.append(("select_features", FeatureSelector(columns=get_feature_columns(cfg))))
+    if _feature_set(cfg) == "all":
+        for column in cfg["features"].get("categorical_derived", []):
+            steps.append((f"encode_{column}", FailureTypeEncoder(column=column)))
+    return Pipeline(steps)
 
 
 def split_data(
@@ -415,6 +465,43 @@ def split_data(
 
     Raises:
         KeyError: If the target or a configured column is missing from ``df``.
-        ValueError: If ``features.feature_set`` is not one of ``FEATURE_SETS``.
+        ValueError: If ``features.feature_set`` is not one of ``FEATURE_SETS``,
+            or the target is not binary 0/1.
     """
-    raise NotImplementedError
+    features = cfg["features"]
+    target = features["target"]
+    feature_set = _feature_set(cfg)
+
+    input_columns = list(features["sensors"])
+    if feature_set == "all":
+        logger.warning(
+            "feature_set='all': including derived columns %s. They reproduce the target (leakage) "
+            "and must only be used to demonstrate leakage, never for the real model.",
+            features["derived"],
+        )
+        input_columns += list(features["derived"])
+
+    missing = [column for column in [target, *features["identifiers"], *input_columns] if column not in df.columns]
+    if missing:
+        raise KeyError(f"Configured column(s) missing from the data: {missing}.")
+
+    dropped = [column for column in df.columns if column not in input_columns and column != target]
+    logger.info("Dropping non-feature columns: %s", dropped)
+
+    y = df[target]
+    unexpected = set(y.dropna().unique()) - {0, 1}
+    if unexpected or y.isna().any():
+        raise ValueError(f"Target '{target}' must be binary 0/1 with no nulls; found values {sorted(unexpected)}.")
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        df[input_columns],
+        y,
+        test_size=cfg["split"]["test_size"],
+        stratify=y,
+        random_state=cfg["random_state"],
+    )
+    logger.info(
+        "Stratified split: train %d rows (%.2f%% positive), test %d rows (%.2f%% positive)",
+        len(X_train), 100 * y_train.mean(), len(X_test), 100 * y_test.mean(),
+    )
+    return X_train, X_test, y_train, y_test
