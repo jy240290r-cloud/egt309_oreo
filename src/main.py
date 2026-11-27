@@ -118,7 +118,18 @@ def args_to_overrides(args: argparse.Namespace) -> dict[str, Any]:
     Returns:
         Overrides for ``load_config``.
     """
-    raise NotImplementedError
+    overrides: dict[str, Any] = {
+        "models.enabled": args.models,
+        "features.feature_set": args.feature_set,
+        "random_state": args.seed,
+    }
+    # Switches are False when not given; only a switch that is ON becomes an override.
+    if args.no_tune:
+        overrides["tuning.enabled"] = False
+    if args.rebuild_db:
+        overrides["database.rebuild"] = True
+    # load_config skips None values, but dropping them here keeps the log clean.
+    return {key: value for key, value in overrides.items() if value is not None}
 
 
 def configure_logging(cfg: dict[str, Any]) -> None:
@@ -127,7 +138,12 @@ def configure_logging(cfg: dict[str, Any]) -> None:
     Args:
         cfg: Full pipeline configuration.
     """
-    raise NotImplementedError
+    log_cfg = cfg.get("logging", {})
+    logging.basicConfig(
+        level=getattr(logging, str(log_cfg.get("level", "INFO")).upper(), logging.INFO),
+        format=log_cfg.get("format", "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"),
+        force=True,  # replace any handler set up before the config was loaded
+    )
 
 
 def run(cfg: dict[str, Any]) -> str:
@@ -139,7 +155,37 @@ def run(cfg: dict[str, Any]) -> str:
     Returns:
         Name of the selected best model.
     """
-    raise NotImplementedError
+    paths = cfg["paths"]
+    logger.info(
+        "Pipeline start | models=%s | feature_set=%s | tuning=%s | seed=%s",
+        cfg["models"]["enabled"], cfg["features"]["feature_set"],
+        cfg["tuning"]["enabled"], cfg["random_state"],
+    )
+
+    # 1. Ingest: CSV -> SQLite (only if needed), then load the readings with SQL.
+    ingestor = DataIngestor(cfg)
+    ingestor.ensure_database()
+    df = ingestor.load_data()
+
+    # 2. Split: drop identifiers (and leaky columns unless feature_set = all), stratified train/test.
+    X_train, X_test, y_train, y_test = split_data(df, cfg)
+
+    # 3. Train: hyperparameter search + threshold tuning on the training set only, then save.
+    trainer = ModelTrainer(cfg)
+    trained = trainer.fit_all(X_train, y_train)
+    trainer.save(trained, paths["model_dir"])
+
+    # 4. Evaluate: the test set is used here, once.
+    evaluator = ModelEvaluator(cfg)
+    results = evaluator.evaluate(trained, X_test, y_test)
+    evaluator.feature_importance(trained, X_test, y_test)
+    evaluator.plot_confusion_matrices(trained, X_test, y_test, paths["report_dir"])
+    evaluator.plot_pr_curves(trained, X_test, y_test, paths["report_dir"])
+    best = evaluator.select_best(results)
+    evaluator.save_report(paths["report_dir"])
+
+    logger.info("Pipeline finished. Best model: %s | reports in %s", best, paths["report_dir"])
+    return best
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -152,6 +198,9 @@ def main(argv: list[str] | None = None) -> int:
         Process exit code (0 on success).
     """
     args = parse_args(argv)
+    # Temporary INFO logging so messages from loading the config (e.g. overrides) are shown;
+    # configure_logging then applies the level and format from the config itself.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s")
     cfg = load_config(args.config, args_to_overrides(args))
     configure_logging(cfg)
     run(cfg)
