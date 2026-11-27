@@ -143,7 +143,7 @@ threshold:
   tune: true            # false = use `default` for every model
   default: 0.5
   beta: 2               # F-beta to maximise; beta > 1 favours recall
-  min_precision: 0.25   # candidate thresholds below this precision are rejected
+  min_precision: 0.8   # candidate thresholds below this precision are rejected
   search_min: 0.05      # candidate grid: search_min..search_max in steps of search_step
   search_max: 0.95
   search_step: 0.01
