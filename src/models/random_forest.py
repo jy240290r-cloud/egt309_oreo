@@ -12,7 +12,7 @@ from .base import MODEL_STEP, BaseModel
 
 class RandomForestModel(BaseModel):
     """Random forest with balanced class weights.
-
+ 
     Why a random forest for this problem (see eda.ipynb, Sections 4 and 6):
 
     * Maintenance depends on thresholds (temperature > 90 °C, |vibration| > 80 mm/s).
