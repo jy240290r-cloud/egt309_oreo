@@ -84,11 +84,15 @@ models:
   logistic_regression:
     defaults:
       C: 1.0
-      solver: lbfgs
-      max_iter: 1000
+      l1_ratio: 0.0          # 0.0 = pure L2 (ridge), 1.0 = pure L1 (lasso), in between = elastic-net
+      solver: saga           # the only solver that supports every l1_ratio, including the elastic-net mix
+      max_iter: 2000         # saga converges slowly; enough iterations to avoid ConvergenceWarning
       class_weight: balanced
-    search_space:
-      C: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+    search_space:            # keys are prefixed with `model__` in code (BaseModel.search_space)
+      C: [0.01, 0.1, 1, 10, 100]              # inverse regularisation strength, log range
+      # L1/L2 mix. Set via l1_ratio only: sklearn >= 1.8 deprecates `penalty`.
+      # An L1-leaning mix can zero out uninformative sensors (humidity, pressure, energy_consumption).
+      l1_ratio: [0.0, 0.25, 0.5, 0.75, 1.0]
 
   random_forest:
     defaults:
