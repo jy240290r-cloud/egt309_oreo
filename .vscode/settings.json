@@ -1,0 +1,10 @@
+{
+    // On Windows, open new terminals as Git Bash instead of PowerShell,
+    // so `bash run.sh` uses Windows Python (PowerShell's `bash` is WSL).
+    "terminal.integrated.defaultProfile.windows": "Git Bash",
+
+    // Keep shell scripts on Linux line endings when saved from VS Code.
+    "[shellscript]": {
+        "files.eol": "\n"
+    }
+}
